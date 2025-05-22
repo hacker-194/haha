@@ -19,9 +19,11 @@ def setup_logging(level=logging.INFO):
         format="%(asctime)s %(levelname)s: %(message)s"
     )
 
-detector = MTCNN()
+def get_detector():
+    """Create an MTCNN detector instance. This prevents GPU memory leak if run repeatedly in notebooks."""
+    return MTCNN()
 
-def detect_and_crop_face(image_array):
+def detect_and_crop_face(image_array, detector):
     """Detect and crop the largest face in the image. If no face, return the original image."""
     image_rgb = cv2.cvtColor(image_array, cv2.COLOR_BGR2RGB)
     faces = detector.detect_faces(image_rgb)
@@ -35,14 +37,14 @@ def detect_and_crop_face(image_array):
         return cropped
     return image_rgb
 
-def preprocess_image(image_array):
+def preprocess_image(image_array, detector):
     """Detect, crop, resize, and normalize an image array."""
-    cropped = detect_and_crop_face(image_array)
+    cropped = detect_and_crop_face(image_array, detector)
     resized = cv2.resize(cropped, (IMG_SIZE, IMG_SIZE))
     normalized = resized / 255.0
     return normalized
 
-def preprocess_directory(directory_path, save_to_dir, batch_size=64):
+def preprocess_directory(directory_path, save_to_dir, batch_size=64, detector=None):
     """Preprocess images in a directory and save them to another."""
     os.makedirs(save_to_dir, exist_ok=True)
     files = sorted([f for f in os.listdir(directory_path) if f.lower().endswith(('.jpg', '.jpeg', '.png'))])
@@ -56,7 +58,7 @@ def preprocess_directory(directory_path, save_to_dir, batch_size=64):
             try:
                 img = cv2.imread(src)
                 if img is not None:
-                    proc = preprocess_image(img)
+                    proc = preprocess_image(img, detector)
                     out_img = (proc * 255).astype(np.uint8)
                     success = cv2.imwrite(dst, cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR))
                     if not success:
@@ -69,6 +71,7 @@ def preprocess_directory(directory_path, save_to_dir, batch_size=64):
 
 if __name__ == "__main__":
     setup_logging()
+    detector = get_detector()
     for label in LABELS:
         src_dir = os.path.join(FRAMES_DIR, label)
         dst_dir = os.path.join(PROCESSED_DIR, label)
@@ -78,5 +81,6 @@ if __name__ == "__main__":
         preprocess_directory(
             src_dir,
             dst_dir,
-            batch_size=64
+            batch_size=1000,
+            detector=detector
         )
