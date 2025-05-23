@@ -11,6 +11,7 @@ from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from PIL import Image
 
 import torch
+import torch.nn.functional as F
 from transformers import AutoImageProcessor, AutoModelForImageClassification
 
 # === CONFIGURATION ===
@@ -32,7 +33,7 @@ HF_MODELS = [
         "name": "microsoft/resnet-50",
         "processor": None,
         "model": None,
-        "label_map": None  # This model predicts ImageNet classes (1,000 categories)
+        "label_map": None
     }
 ]
 
@@ -146,24 +147,22 @@ def hf_predict(hf, pil_image: Image.Image, device: str = "cpu") -> str:
     with torch.no_grad():
         outputs = model(**inputs)
         logits = outputs.logits
-        predicted_class_idx = logits.argmax(-1).item()
+        probs = F.softmax(logits, dim=-1)
+        predicted_class_idx = int(torch.argmax(probs, dim=-1).item())
         if hf["label_map"]:
-            # For the 3-class model, map to label string
             label = hf["label_map"].get(predicted_class_idx, str(predicted_class_idx))
             return label
         else:
-            # For the ImageNet classifier, return the class index as string
             return str(predicted_class_idx)
 
 def ensemble_predict(
     hf_models: List[dict],
-    img_array: np.ndarray,
-    pil_image: Optional[Image.Image] = None,
+    pil_image: Image.Image,
     device: str = "cpu"
 ) -> List[str]:
     preds = []
     for hf in hf_models:
-        value = hf_predict(hf, pil_image if pil_image is not None else Image.fromarray(img_array.astype(np.uint8)), device=device)
+        value = hf_predict(hf, pil_image, device=device)
         preds.append(value)
     return preds
 
@@ -195,25 +194,21 @@ def batch_predict_on_folder_ensemble(
 
     for i in range(0, len(image_info), batch_size):
         batch_info = image_info[i:i+batch_size]
-        batch_imgs, batch_paths, batch_hashes, pil_images = [], [], [], []
+        pil_images = []
+        paths, hashes = [], []
         for image_path, img_hash in batch_info:
             try:
                 pil_img = load_img(image_path, target_size=(224, 224))
-                img_array = img_to_array(pil_img)
-                batch_imgs.append(img_array)
-                batch_paths.append(image_path)
-                batch_hashes.append(img_hash)
                 pil_images.append(pil_img)
+                paths.append(image_path)
+                hashes.append(img_hash)
             except Exception as e:
                 logging.warning(f"Could not load image {image_path}: {e}")
-                continue
-        if batch_imgs:
-            batch_imgs_np = np.array(batch_imgs)
-            for arr, pil_img, path, img_hash in zip(batch_imgs_np, pil_images, batch_paths, batch_hashes):
-                preds = ensemble_predict(hf_models, arr, pil_image=pil_img, device=device)
+        if pil_images:
+            for pil_img, path, img_hash in zip(pil_images, paths, hashes):
+                preds = ensemble_predict(hf_models, pil_img, device=device)
                 pred_info = ", ".join(preds)
                 logging.info(f"Predictions for {os.path.basename(path)}: {pred_info}")
-                # Store feedback for each model's prediction
                 for pred in preds:
                     collect_and_store_feedback(
                         path, pred, feedback_dir,
