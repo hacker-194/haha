@@ -1,0 +1,10 @@
+gradio
+numpy
+opencv-python
+Pillow
+tensorflow
+mtcnn
+torch
+transformers
+tqdm
+matplotlib
