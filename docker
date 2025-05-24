@@ -1,0 +1,25 @@
+# Use an official Python slim image as the base
+FROM python:3.10-slim
+
+# Set working directory in the container
+WORKDIR /app
+
+# Copy all files from your project into the container
+COPY . /app
+
+# Install system dependencies for Jupyter Notebook and scientific Python packages
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc g++ build-essential && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install pip requirements if requirements.txt exists
+RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
+
+# Install Jupyter Notebook
+RUN pip install --no-cache-dir notebook
+
+# Expose Jupyter Notebook's default port
+EXPOSE 8888
+
+# Set the default command to run Jupyter Notebook
+CMD ["jupyter", "notebook", "--ip=0.0.0.0", "--allow-root", "--no-browser"]
