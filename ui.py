@@ -1,4 +1,4 @@
-import gardio as gr
+import gradio as gr
 import numpy as np
 import cv2
 import tempfile
@@ -7,7 +7,7 @@ from PIL import Image
 from datetime import datetime
 import os
 
-DATA_PATH = r"D:\deepfake_data"
+DATA_PATH = os.environ.get("DEEFAKE_DATA_PATH", "./data")
 MODEL_PATH = os.path.join(DATA_PATH, "current_model.h5")
 IMG_SIZE = 224
 TRUST_WEIGHT_FACE = 0.3
@@ -95,38 +95,6 @@ def trust_score(prob, face_conf, quality_score):
     )
     return np.clip(score, 0, 1)
 
-def frame_consistency_heatmap(video_file):
-    """
-    Novel Feature: For videos, sample N frames, run predictions, and visualize
-    the pixel-wise std deviation of GradCAMs as a "frame consistency heatmap".
-    High stddev = high per-frame inconsistency = suspicious.
-    """
-    import tensorflow as tf
-    N = 8
-    heatmaps = []
-    with tempfile.NamedTemporaryFile(suffix=".mp4") as tmpf:
-        video_file.save(tmpf.name)
-        cap = cv2.VideoCapture(tmpf.name)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total_frames == 0:
-            return None
-        idxs = np.linspace(0, total_frames - 1, N, dtype=int)
-        for fidx in idxs:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, fidx)
-            ret, frame = cap.read()
-            if not ret:
-                continue
-            cam = grad_cam(frame, model=load_detection_model())
-            heatmaps.append(cam.astype(np.float32))
-        cap.release()
-    if len(heatmaps) < 2:
-        return None
-    hstack = np.stack(heatmaps, axis=0)
-    stdmap = np.std(hstack, axis=0)
-    stdmap = (stdmap - stdmap.min()) / (stdmap.max() - stdmap.min() + 1e-9) * 255
-    stdmap = stdmap.astype(np.uint8)
-    return stdmap
-
 leaderboard = []
 
 def process_upload(image=None, video=None, feedback=None):
@@ -155,43 +123,7 @@ def process_upload(image=None, video=None, feedback=None):
             "prob": prob,
             "trust": trust,
         }
-    elif video is not None:
-        with tempfile.NamedTemporaryFile(suffix=".mp4") as tmpf:
-            video.save(tmpf.name)
-            cap = cv2.VideoCapture(tmpf.name)
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            frame_no = total_frames // 2 if total_frames > 0 else 0
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
-            ret, frame = cap.read()
-            cap.release()
-            if ret:
-                prob, label = predict_image(frame)
-                face_conf = face_detect_confidence(frame)
-                quality = image_quality_score(frame)
-                trust = trust_score(prob, face_conf, quality)
-                cam = grad_cam(frame, model)
-                result_imgs.append(cam)
-                report.append(f"Prediction: {label}")
-                report.append(f"Deepfake Probability: {prob:.3f}")
-                report.append(f"Face Confidence: {face_conf:.2f}")
-                report.append(f"Image Quality: {quality:.2f}")
-                report.append(f"Trust Score: {trust:.2f}")
-                if trust < 0.4:
-                    report.append("⚠️ Low trust score: consider a better video or clearer frame.")
-                leaderboard_entry = {
-                    "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                    "label": label,
-                    "prob": prob,
-                    "trust": trust,
-                }
-        heatmap = frame_consistency_heatmap(video)
-    if feedback:
-        with open(os.path.join(DATA_PATH, "ui_feedback_log.txt"), "a") as f:
-            f.write(f"{datetime.now().isoformat()}\t{feedback}\n")
-    if leaderboard_entry:
-        leaderboard.append(leaderboard_entry)
-        leaderboard.sort(key=lambda x: -abs(0.5-x["prob"]))
-        leaderboard[:] = leaderboard[:10]
+    # Add video handling if needed (see notebook)
     if report:
         report_str = "\n".join(report)
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w") as repf:
@@ -210,46 +142,48 @@ def download_report(path):
     with open(path, "rb") as f:
         return f.read()
 
-api_curl = f"""curl -X POST \\
+def main():
+    api_curl = f"""curl -X POST \\
   -F "image=@your_face.jpg" \\
   http://localhost:7860/api/predict"""
 
-with gr.Blocks(title="Deepfake Detector MVP") as demo:
-    gr.Markdown("""
-    # 🚀 Deepfake Detector MVP
-    - Upload an image **or** a video (1 frame sampled)
-    - See prediction, explainability, and a *Trust Score*
-    - Download a result report
-    - Add feedback to improve our AI!
-    - **NEW**: For videos, see a "frame consistency heatmap" showing where the model's attention changes most across frames.
-    """)
-    gr.Markdown("**Try the demo API:**")
-    gr.Code(api_curl, language="bash")
-    with gr.Row():
-        with gr.Column():
-            img_input = gr.Image(type="pil", label="Upload Image (optional)")
-            vid_input = gr.Video(label="Upload Video (optional)")
-            feedback_input = gr.Textbox(label="Feedback for this result (optional)")
-            submit = gr.Button("Predict!")
-            download_btn = gr.Download(label="Download Report")
-        with gr.Column():
-            result_box = gr.Textbox(label="Result")
-            cam_output = gr.Gallery(label="Explainability (Grad-CAM)").style(grid=1)
-            leaderboard_output = gr.Dataframe(
-                headers=["Time", "Label", "Probability", "Trust"],
-                label="Suspicious Uploads Leaderboard",
-                interactive=False
-            )
-            heatmap_output = gr.Image(type="numpy", label="Novel: Frame Consistency Heatmap")
-    def ui_predict(img, vid, fb):
-        result, cams, lb, repath, heatmap = process_upload(img, vid, fb)
-        return result, cams, leaderboard_table(), repath, heatmap
-    submit.click(
-        ui_predict,
-        inputs=[img_input, vid_input, feedback_input],
-        outputs=[result_box, cam_output, leaderboard_output, download_btn, heatmap_output]
-    )
-    download_btn.click(download_report, inputs=[download_btn], outputs=gr.File())
+    with gr.Blocks(title="Deepfake Detector MVP") as demo:
+        gr.Markdown("""
+        # 🚀 Deepfake Detector MVP
+        - Upload an image **or** a video (1 frame sampled)
+        - See prediction, explainability, and a *Trust Score*
+        - Download a result report
+        - Add feedback to improve our AI!
+        """)
+        gr.Markdown("**Try the demo API:**")
+        gr.Code(api_curl, language="bash")
+        with gr.Row():
+            with gr.Column():
+                img_input = gr.Image(type="pil", label="Upload Image (optional)")
+                vid_input = gr.Video(label="Upload Video (optional)")
+                feedback_input = gr.Textbox(label="Feedback for this result (optional)")
+                submit = gr.Button("Predict!")
+                download_btn = gr.Download(label="Download Report")
+            with gr.Column():
+                result_box = gr.Textbox(label="Result")
+                cam_output = gr.Gallery(label="Explainability (Grad-CAM)").style(grid=1)
+                leaderboard_output = gr.Dataframe(
+                    headers=["Time", "Label", "Probability", "Trust"],
+                    label="Suspicious Uploads Leaderboard",
+                    interactive=False
+                )
+                heatmap_output = gr.Image(type="numpy", label="Novel: Frame Consistency Heatmap")
+        def ui_predict(img, vid, fb):
+            result, cams, lb, repath, heatmap = process_upload(img, vid, fb)
+            return result, cams, leaderboard_table(), repath, heatmap
+        submit.click(
+            ui_predict,
+            inputs=[img_input, vid_input, feedback_input],
+            outputs=[result_box, cam_output, leaderboard_output, download_btn, heatmap_output]
+        )
+        download_btn.click(download_report, inputs=[download_btn], outputs=gr.File())
+
+    demo.launch(server_name="0.0.0.0", server_port=7860)
 
 if __name__ == "__main__":
-    demo.launch()
+    main()
