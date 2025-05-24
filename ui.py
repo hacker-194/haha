@@ -6,6 +6,12 @@ from tensorflow.keras.models import load_model
 from datetime import datetime
 import os
 
+# Hugging Face imports
+from transformers import AutoImageProcessor, AutoModelForImageClassification
+import torch
+import torch.nn.functional as F
+from PIL import Image
+
 DATA_PATH = os.environ.get("DEEFAKE_DATA_PATH", "./data")
 MODEL_PATH = os.path.join(DATA_PATH, "current_model.h5")
 IMG_SIZE = 224
@@ -14,12 +20,23 @@ TRUST_WEIGHT_QUALITY = 0.2
 TRUST_WEIGHT_MODEL = 0.5
 
 model = None
+hf_model = None
+hf_processor = None
+hf_label_map = {0: "AI", 1: "Deepfake", 2: "Real"}  # Adjust as needed
 
 def load_detection_model():
     global model
     if model is None:
         model = load_model(MODEL_PATH)
     return model
+
+def load_hf_model():
+    global hf_model, hf_processor
+    if hf_model is None or hf_processor is None:
+        hf_model_name = "prithivMLmods/AI-vs-Deepfake-vs-Real-v2.0"
+        hf_processor = AutoImageProcessor.from_pretrained(hf_model_name)
+        hf_model = AutoModelForImageClassification.from_pretrained(hf_model_name)
+    return hf_model, hf_processor
 
 def preprocess_image(img: np.ndarray) -> np.ndarray:
     from tensorflow.keras.applications.efficientnet import preprocess_input
@@ -28,13 +45,31 @@ def preprocess_image(img: np.ndarray) -> np.ndarray:
     img = preprocess_input(img.astype(np.float32))
     return img
 
-def predict_image(img: np.ndarray):
+def predict_keras(img: np.ndarray):
     model = load_detection_model()
     proc = preprocess_image(img)
     pred = model.predict(np.expand_dims(proc, axis=0))
     prob = float(pred[0][0]) if pred.shape[-1] == 1 else float(pred[0][1])
     label = "FAKE" if prob > 0.5 else "REAL"
     return prob, label
+
+def predict_hf(img: np.ndarray):
+    hf_model, hf_processor = load_hf_model()
+    img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)).convert("RGB")
+    inputs = hf_processor(images=img_pil, return_tensors="pt")
+    with torch.no_grad():
+        outputs = hf_model(**inputs)
+        logits = outputs.logits
+        probs = F.softmax(logits, dim=-1)
+        pred_idx = int(torch.argmax(probs, dim=-1).item())
+        prob = float(probs[0][pred_idx])
+        label = hf_label_map.get(pred_idx, str(pred_idx))
+    # Map to "REAL" or "FAKE" for ensemble logic
+    if label == "Real":
+        label_simple = "REAL"
+    else:
+        label_simple = "FAKE"
+    return prob, label_simple, label  # prob, "REAL"/"FAKE", original label
 
 def grad_cam(img: np.ndarray, model=None, pred_index=None):
     import tensorflow as tf
@@ -80,7 +115,7 @@ def face_detect_confidence(img: np.ndarray) -> float:
 
 def image_quality_score(img: np.ndarray) -> float:
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    score = cv2.Laplacian(gray, cv2.CV_64F).var()
+    score = cv2.Laplian(gray, cv2.CV_64F).var()
     return min(1.0, score / 1000)
 
 def trust_score(prob, face_conf, quality_score):
@@ -97,6 +132,13 @@ def trust_score(prob, face_conf, quality_score):
 
 leaderboard = []
 
+def ensemble_label_and_prob(keras_prob, keras_label, hf_prob, hf_label):
+    # Majority voting on label, average prob for display
+    votes = [keras_label, hf_label]
+    label = "REAL" if votes.count("REAL") > votes.count("FAKE") else "FAKE"
+    prob = (keras_prob + hf_prob) / 2
+    return prob, label
+
 def process_upload(image=None, video=None, feedback=None):
     report = []
     result_imgs = []
@@ -104,14 +146,20 @@ def process_upload(image=None, video=None, feedback=None):
     heatmap = None
     if image is not None:
         arr = np.array(image)
-        prob, label = predict_image(arr)
+        # Predict with both models
+        keras_prob, keras_label = predict_keras(arr)
+        hf_prob, hf_label_simple, hf_label_orig = predict_hf(arr)
+        # Ensemble
+        ens_prob, ens_label = ensemble_label_and_prob(keras_prob, keras_label, hf_prob, hf_label_simple)
         face_conf = face_detect_confidence(arr)
         quality = image_quality_score(arr)
-        trust = trust_score(prob, face_conf, quality)
+        trust = trust_score(ens_prob, face_conf, quality)
         cam = grad_cam(arr, model)
         result_imgs.append(cam)
-        report.append(f"Prediction: {label}")
-        report.append(f"Deepfake Probability: {prob:.3f}")
+        report.append(f"Prediction (Ensemble): {ens_label}")
+        report.append(f" Keras: {keras_label} (Prob: {keras_prob:.3f})")
+        report.append(f" HuggingFace: {hf_label_simple} ['{hf_label_orig}'] (Prob: {hf_prob:.3f})")
+        report.append(f"Deepfake Probability (Ensemble): {ens_prob:.3f}")
         report.append(f"Face Confidence: {face_conf:.2f}")
         report.append(f"Image Quality: {quality:.2f}")
         report.append(f"Trust Score: {trust:.2f}")
@@ -119,10 +167,14 @@ def process_upload(image=None, video=None, feedback=None):
             report.append("⚠️ Low trust score: consider a better face image or clearer video frame.")
         leaderboard_entry = {
             "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "label": label,
-            "prob": prob,
-            "trust": trust,
+            "label": ens_label,
+            "keras_label": keras_label,
+            "keras_prob": keras_prob,
+            "hf_label": hf_label_simple,
+            "hf_prob": hf_prob,
+            "trust": trust
         }
+        leaderboard.append(leaderboard_entry)
     # Video handling can be added here if needed
     if report:
         report_str = "\n".join(report)
@@ -135,8 +187,13 @@ def process_upload(image=None, video=None, feedback=None):
 
 def leaderboard_table():
     if not leaderboard:
-        return [["-", "-", "-", "-"]]
-    return [[e["time"], e["label"], f"{e['prob']:.2f}", f"{e['trust']:.2f}"] for e in leaderboard]
+        return [["-", "-", "-", "-", "-"]]
+    return [[
+        e["time"], e["label"],
+        f"Keras:{e['keras_label']}({e['keras_prob']:.2f})",
+        f"HF:{e['hf_label']}({e['hf_prob']:.2f})",
+        f"{e['trust']:.2f}"
+    ] for e in leaderboard]
 
 def download_report(path):
     with open(path, "rb") as f:
@@ -168,7 +225,7 @@ def main():
                 result_box = gr.Textbox(label="Result")
                 cam_output = gr.Gallery(label="Explainability (Grad-CAM)").style(grid=1)
                 leaderboard_output = gr.Dataframe(
-                    headers=["Time", "Label", "Probability", "Trust"],
+                    headers=["Time", "Ensemble", "Keras", "HuggingFace", "Trust"],
                     label="Suspicious Uploads Leaderboard",
                     interactive=False
                 )
