@@ -3,7 +3,6 @@ import numpy as np
 import cv2
 import tempfile
 from tensorflow.keras.models import load_model
-from PIL import Image
 from datetime import datetime
 import os
 
@@ -15,6 +14,7 @@ TRUST_WEIGHT_QUALITY = 0.2
 TRUST_WEIGHT_MODEL = 0.5
 
 model = None
+
 def load_detection_model():
     global model
     if model is None:
@@ -123,7 +123,7 @@ def process_upload(image=None, video=None, feedback=None):
             "prob": prob,
             "trust": trust,
         }
-    # Add video handling if needed (see notebook)
+    # Video handling can be added here if needed
     if report:
         report_str = "\n".join(report)
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w") as repf:
