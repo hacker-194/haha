@@ -1,3 +1,16 @@
+"""
+Deepfake Batch Prediction & Feedback Pipeline
+--------------------------------------------
+- Ensemble prediction using multiple HuggingFace image classification models.
+- Automatic feedback collection with deduplication (hash-based).
+- Batch processing with logging, error handling, and CLI support.
+- Designed for production: configurable, robust, extensible.
+
+Usage:
+    python model.py
+    (Set environment variable DEEFAKE_DATA_PATH, or edit DATA_PATH below)
+"""
+
 import os
 import sys
 import numpy as np
@@ -15,7 +28,7 @@ import torch.nn.functional as F
 from transformers import AutoImageProcessor, AutoModelForImageClassification
 
 # === CONFIGURATION ===
-DATA_PATH = os.environ.get("DEEFAKE_DATA_PATH", r"D:\deepfake_data")
+DATA_PATH = os.environ.get("DEEFAKE_DATA_PATH", "./deepfake_data")
 PROCESSED_DIR = os.path.join(DATA_PATH, "processed_frames")
 FEEDBACK_DIR = os.path.join(DATA_PATH, "feedback")
 FEEDBACK_LOG = os.path.join(DATA_PATH, "feedback_log.txt")
