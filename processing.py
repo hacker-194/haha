@@ -1,26 +1,6 @@
-"""
-Deepfake Face Preprocessing Script
----------------------------------
-Processes frames by detecting and cropping the most confident/largest face using MTCNN,
-with fallback to resizing the full image if no face is found.
-
-Features:
-    - Batch processing with progress bars and logging
-    - Handles missing/corrupt images gracefully
-    - Configurable input/output structure and image size
-    - Easily extensible for production pipelines
-
-Usage:
-    python preprocess_faces.py
-
-Environment Variables:
-    - DATA_PATH: override data root path (default: D:\DFD_extracted_frames)
-"""
-
+from utils import setup_logging, get_detector, detect_and_crop_face
 import os
 import cv2
-import numpy as np
-from mtcnn import MTCNN
 import logging
 from tqdm import tqdm
 
@@ -30,32 +10,7 @@ PROCESSED_DIR = os.path.join(DATA_PATH, "processed_frames")
 LABELS = ["real", "fake"]
 IMG_SIZE = 128
 
-def setup_logging(level=logging.INFO):
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)s: %(message)s"
-    )
-
-def get_detector():
-    """Return a (possibly singleton) MTCNN detector."""
-    return MTCNN()
-
-def detect_and_crop_face(image_array, detector):
-    """Detect and crop the most confident/largest face. Fallback to resize."""
-    image_rgb = cv2.cvtColor(image_array, cv2.COLOR_BGR2RGB)
-    faces = detector.detect_faces(image_rgb)
-    if faces:
-        # Use the most confident, largest face
-        faces = sorted(faces, key=lambda x: x['confidence'] * x['box'][2] * x['box'][3], reverse=True)
-        x, y, w, h = faces[0]['box']
-        x, y = max(x, 0), max(y, 0)
-        cropped = image_array[y:y+h, x:x+w]
-        return cv2.resize(cropped, (IMG_SIZE, IMG_SIZE))
-    else:
-        return cv2.resize(image_array, (IMG_SIZE, IMG_SIZE))
-
 def preprocess_directory(src_dir, dst_dir, batch_size=1000, detector=None):
-    """Preprocess all images in src_dir, saving to dst_dir in batches."""
     if not os.path.exists(dst_dir):
         os.makedirs(dst_dir, exist_ok=True)
     files = [f for f in os.listdir(src_dir) if os.path.isfile(os.path.join(src_dir, f))]
@@ -70,7 +25,8 @@ def preprocess_directory(src_dir, dst_dir, batch_size=1000, detector=None):
                 if img is None:
                     logging.warning(f"Failed to read image: {src_path}")
                     continue
-                cropped = detect_and_crop_face(img, detector)
+                cropped, _ = detect_and_crop_face(img, detector)
+                cropped = cv2.resize(cropped, (IMG_SIZE, IMG_SIZE))
                 cv2.imwrite(dst_path, cropped)
             except Exception as e:
                 logging.warning(f"Error processing {src_path}: {e}")
