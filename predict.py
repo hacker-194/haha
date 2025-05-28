@@ -1,65 +1,14 @@
-"""
-Deepfake Prediction Script
---------------------------
-Predicts whether a given image is a deepfake or real using a trained Keras model.
-
-Features:
-    - Supports both 'lstm' and 'efficientnet' model types.
-    - Handles image loading, resizing, preprocessing, and prediction.
-    - CLI interface with argparse.
-    - Logging and error handling for robust usage.
-
-Usage:
-    python predict.py image.jpg --model model.h5 --model_type efficientnet
-"""
-
-import os
+from utils import setup_logging, preprocess_image
 import numpy as np
 import cv2
 import logging
 from tensorflow.keras.models import load_model
 
-def setup_logging(level=logging.INFO):
-    logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=level)
-
-def preprocess_image(img_path, model_type="lstm"):
-    """
-    Loads and preprocesses an image for prediction.
-
-    Args:
-        img_path (str): Path to the image file.
-        model_type (str): 'efficientnet' or 'lstm'.
-
-    Returns:
-        np.ndarray: Preprocessed image array.
-    """
+def predict_image(img_path, model, model_type="lstm"):
     img = cv2.imread(img_path)
     if img is None:
         raise ValueError(f"Could not read image: {img_path}")
-    if model_type == "efficientnet":
-        from tensorflow.keras.applications.efficientnet import preprocess_input
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = cv2.resize(img, (224, 224))
-        img = preprocess_input(img.astype(np.float32))
-    else:
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = cv2.resize(img, (128, 128))
-        img = img.astype(np.float32) / 255.0
-    return img
-
-def predict_image(img_path, model, model_type="lstm"):
-    """
-    Predicts whether the image is FAKE or REAL.
-
-    Args:
-        img_path (str): Path to the image file.
-        model: Loaded Keras model.
-        model_type (str): 'efficientnet' or 'lstm'.
-
-    Returns:
-        dict: {'prob': float, 'label': str}
-    """
-    img = preprocess_image(img_path, model_type)
+    img, _ = preprocess_image(img, model_type=model_type, use_face_crop=False, output_size=224)
     img_batch = np.expand_dims(img, axis=0)
     pred = model.predict(img_batch)
     if pred.shape[-1] == 1:
