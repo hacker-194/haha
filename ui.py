@@ -1,3 +1,4 @@
+from utils import preprocess_image
 import gradio as gr
 import numpy as np
 import cv2
@@ -6,7 +7,6 @@ from tensorflow.keras.models import load_model
 from datetime import datetime
 import os
 
-# Hugging Face imports
 from transformers import AutoImageProcessor, AutoModelForImageClassification
 import torch
 import torch.nn.functional as F
@@ -22,7 +22,7 @@ TRUST_WEIGHT_MODEL = 0.5
 model = None
 hf_model = None
 hf_processor = None
-hf_label_map = {0: "AI", 1: "Deepfake", 2: "Real"}  # Adjust as needed
+hf_label_map = {0: "AI", 1: "Deepfake", 2: "Real"}
 
 def load_detection_model():
     global model
@@ -38,16 +38,9 @@ def load_hf_model():
         hf_model = AutoModelForImageClassification.from_pretrained(hf_model_name)
     return hf_model, hf_processor
 
-def preprocess_image(img: np.ndarray) -> np.ndarray:
-    from tensorflow.keras.applications.efficientnet import preprocess_input
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
-    img = preprocess_input(img.astype(np.float32))
-    return img
-
 def predict_keras(img: np.ndarray):
     model = load_detection_model()
-    proc = preprocess_image(img)
+    proc, _ = preprocess_image(img, model_type="efficientnet", use_face_crop=False, output_size=IMG_SIZE)
     pred = model.predict(np.expand_dims(proc, axis=0))
     prob = float(pred[0][0]) if pred.shape[-1] == 1 else float(pred[0][1])
     label = "FAKE" if prob > 0.5 else "REAL"
@@ -64,18 +57,17 @@ def predict_hf(img: np.ndarray):
         pred_idx = int(torch.argmax(probs, dim=-1).item())
         prob = float(probs[0][pred_idx])
         label = hf_label_map.get(pred_idx, str(pred_idx))
-    # Map to "REAL" or "FAKE" for ensemble logic
     if label == "Real":
         label_simple = "REAL"
     else:
         label_simple = "FAKE"
-    return prob, label_simple, label  # prob, "REAL"/"FAKE", original label
+    return prob, label_simple, label
 
 def grad_cam(img: np.ndarray, model=None, pred_index=None):
     import tensorflow as tf
     if model is None:
         model = load_detection_model()
-    image = preprocess_image(img)
+    image, _ = preprocess_image(img, model_type="efficientnet", use_face_crop=False, output_size=IMG_SIZE)
     image = np.expand_dims(image, axis=0)
     last_conv = [l for l in model.layers if "conv" in l.name][-1]
     grad_model = tf.keras.models.Model([model.inputs], [last_conv.output, model.output])
@@ -115,7 +107,7 @@ def face_detect_confidence(img: np.ndarray) -> float:
 
 def image_quality_score(img: np.ndarray) -> float:
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    score = cv2.Laplian(gray, cv2.CV_64F).var()
+    score = cv2.Laplacian(gray, cv2.CV_64F).var()
     return min(1.0, score / 1000)
 
 def trust_score(prob, face_conf, quality_score):
@@ -133,7 +125,6 @@ def trust_score(prob, face_conf, quality_score):
 leaderboard = []
 
 def ensemble_label_and_prob(keras_prob, keras_label, hf_prob, hf_label):
-    # Majority voting on label, average prob for display
     votes = [keras_label, hf_label]
     label = "REAL" if votes.count("REAL") > votes.count("FAKE") else "FAKE"
     prob = (keras_prob + hf_prob) / 2
@@ -146,10 +137,8 @@ def process_upload(image=None, video=None, feedback=None):
     heatmap = None
     if image is not None:
         arr = np.array(image)
-        # Predict with both models
         keras_prob, keras_label = predict_keras(arr)
         hf_prob, hf_label_simple, hf_label_orig = predict_hf(arr)
-        # Ensemble
         ens_prob, ens_label = ensemble_label_and_prob(keras_prob, keras_label, hf_prob, hf_label_simple)
         face_conf = face_detect_confidence(arr)
         quality = image_quality_score(arr)
@@ -175,7 +164,6 @@ def process_upload(image=None, video=None, feedback=None):
             "trust": trust
         }
         leaderboard.append(leaderboard_entry)
-    # Video handling can be added here if needed
     if report:
         report_str = "\n".join(report)
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w") as repf:
