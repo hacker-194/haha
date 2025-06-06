@@ -1,103 +1,62 @@
-import os, cv2, logging, sys, argparse
-from tqdm import tqdm
+import cv2
+import os
+from google.colab import drive
 
-def setup_logging(level=logging.INFO, log_file=None):
-    handlers = [logging.StreamHandler(sys.stdout)]
-    if log_file: handlers.append(logging.FileHandler(log_file))
-    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(message)s", handlers=handlers)
+# Mount Google Drive
+drive.mount('/content/drive')
 
-def list_video_files(d, exts=None): 
-    exts = exts or ['.mp4', '.avi', '.mov', '.mkv']
-    return [f for f in os.listdir(d) if os.path.isfile(os.path.join(d, f)) and os.path.splitext(f)[1].lower() in exts]
+# Base directory where your shared folder contents are located
+# Change 'Celeb-DF' to the actual folder name if different
+base_dir = '/content/drive/My Drive/Celeb-DF'
 
-def check_partial_extraction(outdir, prefix, label, expect, ext):
-    imgs = [f for f in os.listdir(outdir) if f.startswith(f"{prefix}_{label}_frame") and f.endswith(ext)]
-    return len(imgs) >= expect
+# Input video folders
+celeb_real_dir = os.path.join(base_dir, 'Celeb-real')
+celeb_synthesis_dir = os.path.join(base_dir, 'Celeb-synthesis')
+youtube_real_dir = os.path.join(base_dir, 'YouTube-real')
 
-def extract_frames_from_videos(vdir, odir, label, every_n_frames=1, overwrite=False, extensions=None, img_ext=".jpg"):
-    logger = logging.getLogger()
-    if not os.path.exists(vdir):
-        logger.error(f"Video directory does not exist: {vdir}")
-        return 0,0
-    os.makedirs(odir, exist_ok=True)
-    vfiles = list_video_files(vdir, extensions)
-    if not vfiles:
-        logger.warning(f"No video files in {vdir}.")
-        return 0,0
-    total_videos, total_saved = len(vfiles), 0
-    for idx, vname in enumerate(vfiles,1):
-        vpath = os.path.join(vdir, vname)
-        prefix = os.path.splitext(vname)[0]
-        cap = cv2.VideoCapture(vpath)
-        try:
-            if not cap.isOpened():
-                logger.warning(f"Failed to open {vpath}")
+# Output folders for extracted frames
+celeb_real_output_dir = os.path.join(base_dir, 'celeb-fake-output')
+celeb_synthesis_output_dir = os.path.join(base_dir, 'celeb-synthesis-output')
+youtube_real_output_dir = os.path.join(base_dir, 'yt-output')
+
+# Create output directories if they don't exist
+os.makedirs(celeb_real_output_dir, exist_ok=True)
+os.makedirs(celeb_synthesis_output_dir, exist_ok=True)
+os.makedirs(youtube_real_output_dir, exist_ok=True)
+
+def extract_frames_from_videos(video_dir, output_dir, label):
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+
+    for video_name in os.listdir(video_dir):
+        video_path = os.path.join(video_dir, video_name)
+        if not os.path.isfile(video_path):
+            continue
+
+        video_capture = cv2.VideoCapture(video_path)
+        count = 0
+        extracted = 0
+        while video_capture.isOpened():
+            success, frame = video_capture.read()
+            if not success:
+                break
+
+            frame_filename = f"{os.path.splitext(video_name)[0]}_{label}_frame{count}.jpg"
+            frame_path = os.path.join(output_dir, frame_filename)
+
+            # Skip if this frame already exists
+            if os.path.exists(frame_path):
+                count += 1
                 continue
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            if not total_frames:
-                logger.warning(f"Zero frames in {vpath}")
-                continue
-            expect = (total_frames + every_n_frames - 1) // every_n_frames
-            first = os.path.join(odir, f"{prefix}_{label}_frame0{img_ext}")
-            already = os.path.exists(first)
-            partial = False
-            if already and not overwrite:
-                partial = not check_partial_extraction(odir, prefix, label, expect, img_ext)
-                if not partial:
-                    logger.info(f"[{idx}/{len(vfiles)}] Frames for '{vname}' already exist. Skipping.")
-                    continue
-                logger.warning(f"[{idx}/{len(vfiles)}] Partial extraction for '{vname}'. Will resume.")
-            count, saved = 0, 0
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            pbar = tqdm(total=total_frames, desc=f"Extracting {vname}", unit="frame", leave=False)
-            while True:
-                ret, frame = cap.read()
-                if not ret: break
-                if count % every_n_frames == 0:
-                    fpath = os.path.join(odir, f"{prefix}_{label}_frame{count}{img_ext}")
-                    if not overwrite and os.path.exists(fpath):
-                        saved += 1; count += 1; pbar.update(1); continue
-                    try:
-                        if cv2.imwrite(fpath, frame): saved += 1
-                        else: logger.error(f"Failed to write frame {count} of '{vname}' to {fpath}")
-                    except Exception as e:
-                        logger.error(f"Exception saving frame {count} of '{vname}': {e}")
-                count += 1; pbar.update(1)
-            pbar.close()
-            logger.info(f"[{idx}/{len(vfiles)}] '{vname}': {saved} frames saved (Total: {total_frames})")
-            total_saved += saved
-        except Exception as e:
-            logger.error(f"Exception processing video {vpath}: {e}")
-        finally:
-            cap.release()
-    return total_videos, total_saved
 
-def print_summary(summary):
-    logger = logging.getLogger()
-    logger.info("----- Extraction Summary -----")
-    for k, v in summary.items():
-        logger.info(f"{k}: {v[0]} files / {v[1]} frames extracted")
+            cv2.imwrite(frame_path, frame)
+            count += 1
+            extracted += 1
 
-def main():
-    parser = argparse.ArgumentParser(description="Extract frames from video files in a directory.")
-    parser.add_argument("--manipulated_dir", required=True)
-    parser.add_argument("--original_dir", required=True)
-    parser.add_argument("--output_manipulated", required=True)
-    parser.add_argument("--output_original", required=True)
-    parser.add_argument("--every_n_frames", type=int, default=1)
-    parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--img_ext", default=".jpg")
-    parser.add_argument("--log_file", default=None)
-    args = parser.parse_args()
-    setup_logging(log_file=args.log_file)
-    summary = {}
-    v1, f1 = extract_frames_from_videos(args.manipulated_dir, args.output_manipulated, "manipulated",
-        every_n_frames=args.every_n_frames, overwrite=args.overwrite, img_ext=args.img_ext)
-    summary["manipulated"] = (v1, f1)
-    v2, f2 = extract_frames_from_videos(args.original_dir, args.output_original, "original",
-        every_n_frames=args.every_n_frames, overwrite=args.overwrite, img_ext=args.img_ext)
-    summary["original"] = (v2, f2)
-    print_summary(summary)
+        video_capture.release()
+        print(f"Extracted {extracted} new frames from {video_name} (skipped existing).")
 
-if __name__ == "__main__":
-    main()
+# Extract frames from videos in all folders
+extract_frames_from_videos(celeb_real_dir, celeb_real_output_dir, 'celeb_real')
+extract_frames_from_videos(celeb_synthesis_dir, celeb_synthesis_output_dir, 'celeb_synthesis')
+extract_frames_from_videos(youtube_real_dir, youtube_real_output_dir, 'youtube_real')
